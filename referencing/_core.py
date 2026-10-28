@@ -379,15 +379,14 @@ class Registry(Mapping[URI, Resource[D]]):
         if isinstance(new, Resource):
             new = (new,)
 
-        resources = self._resources
-        uncrawled = self._uncrawled
-        for resource in new:
-            id = resource.id()
-            if id is None:
-                raise exceptions.NoInternalID(resource=resource)
-            uncrawled = uncrawled.insert(id)
-            resources = resources.insert(id, resource)
-        return evolve(self, resources=resources, uncrawled=uncrawled)
+        def pairs():
+            for resource in new:
+                id = resource.id()
+                if id is None:
+                    raise exceptions.NoInternalID(resource=resource)
+                yield id, resource
+
+        return self.with_resources(pairs())
 
     def __repr__(self) -> str:
         size = len(self)
@@ -521,13 +520,28 @@ class Registry(Mapping[URI, Resource[D]]):
         """
         resources = self._resources
         uncrawled = self._uncrawled
+        replaced: set[URI] = set()
         for uri, resource in pairs:
             # Empty fragment URIs are equivalent to URIs without the fragment.
             # TODO: Is this true for non JSON Schema resources? Probably not.
             uri = uri.rstrip("#")
+            if uri in resources:
+                replaced.add(uri)
             uncrawled = uncrawled.insert(uri)
             resources = resources.insert(uri, resource)
-        return evolve(self, resources=resources, uncrawled=uncrawled)
+        anchors = self._anchors
+        if replaced:
+            anchors = HashTrieMap(
+                (key, anchor)
+                for key, anchor in anchors.items()
+                if key[0] not in replaced
+            )
+        return evolve(
+            self,
+            resources=resources,
+            anchors=anchors,
+            uncrawled=uncrawled,
+        )
 
     def with_contents(
         self,

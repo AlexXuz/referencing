@@ -63,6 +63,55 @@ class TestRegistry:
             resource=two,
         )
 
+    @pytest.mark.parametrize("fragment", ["", "#"])
+    def test_replacing_resource_refreshes_crawled_anchors(self, fragment):
+        uri = "urn:example"
+        old = DRAFT202012.create_resource({"$anchor": "foo", "const": 1})
+        new = DRAFT202012.create_resource({"$anchor": "foo", "const": 2})
+        original = Registry().with_resource(uri, old).crawl()
+
+        replaced = original.with_resource(uri + fragment, new)
+
+        assert replaced[uri] is new
+        assert (
+            replaced.resolver().lookup(uri + "#foo").contents == new.contents
+        )
+        assert (
+            original.resolver().lookup(uri + "#foo").contents == old.contents
+        )
+
+    def test_replacing_resource_removes_old_anchors(self):
+        uri = "urn:example"
+        old = DRAFT202012.create_resource({"$anchor": "foo"})
+        new = DRAFT202012.create_resource({"type": "integer"})
+        unrelated = DRAFT202012.create_resource({"$anchor": "foo", "const": 3})
+        original = (
+            Registry()
+            .with_resources(
+                [(uri, old), ("urn:other", unrelated)],
+            )
+            .crawl()
+        )
+
+        replaced = original.with_resource(uri, new)
+
+        with pytest.raises(exceptions.NoSuchAnchor):
+            replaced.anchor(uri, "foo")
+        assert replaced.anchor("urn:other", "foo").value.resource == unrelated
+        assert original.anchor(uri, "foo").value.resource == old
+
+    def test_replacing_resources_from_iterator_keeps_last_resource(self):
+        uri = "urn:example"
+        old = DRAFT202012.create_resource({"$anchor": "foo", "const": 1})
+        first = DRAFT202012.create_resource({"$anchor": "foo", "const": 2})
+        last = DRAFT202012.create_resource({"$anchor": "foo", "const": 3})
+        original = Registry().with_resource(uri, old).crawl()
+
+        replaced = original.with_resources(iter([(uri, first), (uri, last)]))
+
+        assert replaced.anchor(uri, "foo").value.resource == last
+        assert original.anchor(uri, "foo").value.resource == old
+
     def test_matmul_resource(self):
         uri = "urn:example:resource"
         resource = ID_AND_CHILDREN.create_resource({"ID": uri, "foo": 12})
@@ -80,6 +129,35 @@ class TestRegistry:
         assert registry == Registry().with_resources(
             [(one_uri, one), (two_uri, two)],
         )
+
+    @pytest.mark.parametrize("as_iterable", [False, True])
+    def test_matmul_replaces_crawled_anchors(self, as_iterable):
+        uri = "urn:example"
+        old = DRAFT202012.create_resource(
+            {"$id": uri, "$anchor": "foo", "const": 1},
+        )
+        new = DRAFT202012.create_resource(
+            {"$id": uri, "$anchor": "foo", "const": 2},
+        )
+        original = (old @ Registry()).crawl()
+
+        replaced = (iter([new]) if as_iterable else new) @ original
+
+        assert replaced.anchor(uri, "foo").value.resource == new
+        assert original.anchor(uri, "foo").value.resource == old
+        assert replaced == original.with_resource(uri, new)
+
+    def test_matmul_iterator_without_id_does_not_change_original(self):
+        resource = ID_AND_CHILDREN.create_resource({"ID": "urn:example"})
+        original = (resource @ Registry()).crawl()
+        anonymous = Resource.opaque({})
+
+        with pytest.raises(exceptions.NoInternalID) as error:
+            iter([resource, anonymous]) @ original
+
+        assert error.value == exceptions.NoInternalID(resource=anonymous)
+        assert original["urn:example"] is resource
+        assert len(original) == 1
 
     def test_matmul_resource_without_id(self):
         resource = Resource.opaque(contents={"foo": "bar"})
